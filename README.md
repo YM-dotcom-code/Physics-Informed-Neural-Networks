@@ -10,8 +10,9 @@ A single neural network predicts two physical fields in a heated bar:
 
 The model learns these fields by enforcing the governing heat-conduction and mechanical-equilibrium equations using PyTorch automatic differentiation. No training data is needed. The governing equations themselves supervise the learning.
 
-![Corrected thermoelastic PINN results](<img width="958" height="257" alt="image" src="https://github.com/user-attachments/assets/56669cae-67ec-480f-a648-cf675cf880dd" />)
-
+<p align="center">
+  <img width="958" alt="Corrected thermoelastic PINN results" src="https://github.com/user-attachments/assets/56669cae-67ec-480f-a648-cf675cf880dd" />
+</p>
 ## **Table of Contents**
 
 - [Background](#background)
