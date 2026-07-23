@@ -85,6 +85,10 @@ T(x) \longrightarrow u(x)
     x = 0                                             x = L
 ```
 
+<p align="center">
+ <img width="1283" height="1283" alt="bar_before_after_heating" src="https://github.com/user-attachments/assets/e675819e-e11d-446b-b0ae-55501e1044e5" />
+</p>
+
 ### Problem Parameters
 
 | Parameter | Description | Value |
