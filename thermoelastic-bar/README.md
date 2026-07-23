@@ -13,7 +13,7 @@ The model learns these fields by enforcing the governing heat-conduction and mec
 <p align="center">
   <img width="958" alt="Corrected thermoelastic PINN results" src="https://github.com/user-attachments/assets/56669cae-67ec-480f-a648-cf675cf880dd" />
 </p>
-## **Table of Contents**
+# **Table of Contents**
 
 - [Background](#background)
 - [Physical Problem](#physical-problem)
