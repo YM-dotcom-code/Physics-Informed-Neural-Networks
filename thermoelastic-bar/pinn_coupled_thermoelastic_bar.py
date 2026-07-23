@@ -8,7 +8,9 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
  
 # === COUPLED THERMOELASTIC PROBLEM ===
 # Heat equation (steady): k * d²T/dx² = 0, T(0)=100, T(L)=500
-# Elasticity with thermal strain: E*d²u/dx² + E*alpha*dT/dx = 0
+# Elasticity with thermal strain:
+#   σ = E(du/dx - α(T - T_ref))
+#   dσ/dx = 0  →  d²u/dx² - α·dT/dx = 0
 #   BC: u(0)=0 (fixed end), sigma(L)=0 → du/dx(L) = alpha*(T(L)-T_ref)
 # Parameters:
 k = 50.0       # Thermal conductivity [W/mK]
@@ -20,23 +22,16 @@ T_ref = 100.0  # Reference temperature (stress-free)
  
 # Analytical solutions:
 # T(x) = T0 + (TL-T0)*x/L  (linear, since d²T/dx²=0)
-# u(x) = alpha * (T(x) - T_ref) * x - alpha*(TL-T0)*x²/(2L)
-#       = alpha*(TL-T0)/(2L) * (2Lx - x²) ... simplified
-# Actually: from E*u'' = -E*alpha*T' and T'=(TL-T0)/L:
-#   u'' = -alpha*(TL-T0)/L
-#   u(x) = -alpha*(TL-T0)/(2L) * x² + C1*x + C2
-#   u(0)=0 → C2=0
-#   u'(L) = alpha*(T(L)-T_ref) = alpha*(TL-T_ref)
-#   u'(L) = -alpha*(TL-T0)/L * L + C1 = -alpha*(TL-T0) + C1
-#   C1 = alpha*(TL-T_ref) + alpha*(TL-T0) = alpha*(2*TL - T_ref - T0)
-#   Since T_ref=T0: C1 = alpha*(2*TL - 2*T0) = 2*alpha*(TL-T0)
+# From dσ/dx=0 and σ(L)=0 → σ=0 everywhere → u' = α(T - T_ref)
+# u'(x) = α(T(x) - T_ref) = α(TL-T0)x/L   [since T_ref = T0]
+# Integrating with u(0)=0:
+# u(x) = α(TL-T0)x²/(2L)
+# u(L) = α(TL-T0)L/2 = 12e-6 * 400 * 0.5 = 2400 μm
 def exact_T(x):
     return T0 + (TL - T0) * x / L
  
 def exact_u(x):
-    dT_dx = (TL - T0) / L
-    C1 = alpha * (2*(TL - T0))
-    return -alpha * dT_dx / 2 * x**2 + C1 * x
+    return alpha * (TL - T0) / (2 * L) * x**2
  
 # === NETWORK: 1 input → 2 outputs [T, u] ===
 class ThermoElasticNet(nn.Module):
@@ -77,10 +72,10 @@ for epoch in range(15000):
     T_xx = torch.autograd.grad(T_x, x_int, torch.ones_like(T_x), create_graph=True)[0]
     res_heat = k * T_xx
     loss_heat = torch.mean(res_heat**2)
-    # --- Elasticity: E*u'' + E*alpha*T' = 0 ---
+    # --- Elasticity: E*u'' - E*alpha*T' = 0 ---
     u_x = torch.autograd.grad(u, x_int, torch.ones_like(u), create_graph=True)[0]
     u_xx = torch.autograd.grad(u_x, x_int, torch.ones_like(u_x), create_graph=True)[0]
-    res_elast = E_mod * u_xx + E_mod * alpha * T_x
+    res_elast = E_mod * u_xx - E_mod * alpha * T_x
     loss_elast = torch.mean(res_elast**2) / E_mod**2  # Normalize
     # --- Boundary conditions ---
     T_0, u_0 = model(x0)
