@@ -1,4 +1,3 @@
-
 # **Coupled Thermoelastic Physics-Informed Neural Network**
 
 This project implements a multi-output **Physics-Informed Neural Network (PINN)** for a steady one-dimensional thermoelastic problem.
@@ -21,7 +20,7 @@ The model learns these fields by enforcing the governing heat-conduction and mec
 - [Governing Equations](#governing-equations)
 - [Exact Analytical Solutions](#exact-analytical-solutions)
 - [PINN Architecture](#pinn-architecture)
-- [Hard Boundary Constraints](#hard-boundary-constraints)
+- [Hard vs Soft Boundary Constraints](#hard-vs-soft-boundary-constraints)
 - [Physics Residuals and Loss Function](#physics-residuals-and-loss-function)
 - [Training Configuration](#training-configuration)
 - [Results](#results)
@@ -29,6 +28,7 @@ The model learns these fields by enforcing the governing heat-conduction and mec
 - [Possible Extensions](#possible-extensions)
 - [Requirements](#requirements)
 - [Run the Project](#run-the-project)
+- [Code Walkthrough](CODE_WALKTHROUGH.md)
 
 ## **Background**
 
@@ -316,7 +316,7 @@ x
     Layer          (tanh activation)
 
                    ┌────────┐   ┌────────┐   ┌────────┐   ┌────────┐
-              ┌───>│ 40     │──>│ 40     │──>│ 40     │──>│ 40     │──┐
+              ┌───>│ 64     │──>│ 64     │──>│ 64     │──>│ 64     │──┐
               │    │neurons │   │neurons │   │neurons │   │neurons │  │   ┌──────────┐
               │    └────────┘   └────────┘   └────────┘   └────────┘  ├──>│ T(x)     │
    ┌──────┐   │                                                       │   └──────────┘
@@ -329,68 +329,105 @@ x
 
 The architecture contains:
 
-- One spatial input
-- Four shared hidden layers with 40 neurons each
-- Hyperbolic tangent activation functions
+- One spatial input (normalized to `s = x/L`)
+- Four shared hidden layers with 64 neurons each
+- Hyperbolic tangent activation functions (infinitely differentiable, required for second-order autograd)
 - Two separate output heads (temperature and displacement)
 
-The shared layers learn spatial features common to both physical fields.
+The shared layers learn spatial features common to both physical fields. The separate heads allow each field to specialize its final mapping.
 
-## **Hard Boundary Constraints**
+## **Hard vs Soft Boundary Constraints**
 
-Important boundary conditions are imposed directly through transformations of the neural-network outputs rather than relying solely on penalty terms.
+In PINNs, boundary conditions can be enforced in two fundamentally different ways. This project uses hard constraints for three of the four boundary conditions and a soft constraint for the remaining one.
 
-The normalized spatial coordinate is:
+### Soft Boundary Constraints
 
-```math
-s=\frac{x}{L}
-```
-
-The temperature difference and displacement scale are:
+A soft constraint adds a penalty term to the loss function that measures how much the network output violates the boundary condition:
 
 ```math
-\Delta T=T_L-T_0,
-\qquad
-u_{\mathrm{scale}}=\alpha\Delta T L
+\mathcal{L}_{\mathrm{BC}}
+=
+w\left[\widehat{T}(0)-T_0\right]^2
++
+w\left[\widehat{T}(L)-T_L\right]^2
++
+w\left[\widehat{u}(0)-0\right]^2
 ```
 
-The transformed temperature prediction:
+The optimizer tries to minimize these penalty terms alongside the PDE residuals. In practice, this creates a multi-objective optimization problem where the network must balance boundary accuracy against interior accuracy. Large penalty weights `w` (often 10⁶ to 10¹²) are needed to force the optimizer to prioritize the boundaries, which can destabilize training or slow convergence.
+
+**Drawbacks of soft constraints:**
+
+- Boundary conditions are only satisfied approximately, never exactly
+- Requires manual tuning of penalty weights for each problem
+- The optimizer spends training capacity learning values that are already known analytically
+- Large weights create ill-conditioned loss landscapes
+
+### Hard Boundary Constraints
+
+A hard constraint builds the boundary condition directly into the mathematical form of the network output. The boundary values are satisfied **by construction** for any set of network weights — no optimization is needed.
+
+The general strategy is to write the output as:
+
+```math
+\widehat{y}(x)
+=
+A(x)+B(x)\cdot N(x)
+```
+
+where `A(x)` is a function that satisfies all boundary conditions on its own, and `B(x)` is a function that is zero at the boundary points so that the free network output `N(x)` cannot violate them.
+
+### Hard Constraints in This Project
+
+**Temperature** (satisfies `T(0) = T₀` and `T(L) = Tₗ`):
 
 ```math
 \widehat{T}(x)
 =
-T_0
+\underbrace{T_0+\Delta T\cdot s}_{A(x)}
 +
-\Delta T
-\left[
-s+s(1-s)N_T(s)
-\right]
+\underbrace{\Delta T\cdot s(1-s)}_{B(x)}
+\cdot N_T(s)
 ```
 
-The transformed displacement prediction:
+- At `s = 0`: both terms involving `s` vanish → `T̂ = T₀` ✓
+- At `s = 1`: the `s(1−s)` factor vanishes → `T̂ = T₀ + ΔT = Tₗ` ✓
+- The factor `s(1−s)` is called a **bubble function** — it opens up in the interior and closes at both ends.
+
+**Displacement** (satisfies `u(0) = 0`):
 
 ```math
 \widehat{u}(x)
 =
-u_{\mathrm{scale}}\,sN_u(s)
+\underbrace{u_{\mathrm{scale}}\cdot s}_{B(x)}
+\cdot N_u(s)
 ```
 
-Here, `N_T(s)` and `N_u(s)` are the raw network outputs. These transformations guarantee:
+- At `s = 0`: the `s` factor is zero → `û = 0` ✓
+- No additive `A(x)` is needed because the condition is homogeneous.
 
-```text
-    Raw Network Output                    Transformed Output (satisfies BCs exactly)
+### Why σ(L) = 0 Remains a Soft Constraint
 
-    N_T(s) ──────────────────>  T̂(x) = T₀ + ΔT·[s + s(1-s)·N_T(s)]
-                                         │
-                                         ├── at x=0: T̂ = T₀       ✓
-                                         └── at x=L: T̂ = Tₗ       ✓
+The stress-free condition involves the **derivative** of the network output:
 
-    N_u(s) ──────────────────>  û(x) = u_scale · s · N_u(s)
-                                         │
-                                         └── at x=0: û = 0         ✓
+```math
+\sigma(L)=E\left[\frac{du}{dx}(L)-\alpha(T_L-T_{\mathrm{ref}})\right]=0
 ```
 
-Hard constraints improve training because the network does not need to learn these conditions from penalty terms alone.
+Hard-coding a derivative constraint requires a more complex output transformation that couples the two network heads and complicates the architecture. For a single Neumann-type condition, a soft penalty with proper normalization is simpler and effective.
+
+### Comparison
+
+| Aspect | Soft Constraint | Hard Constraint |
+|--------|----------------|-----------------|
+| Boundary satisfaction | Approximate (small residual error) | **Exact** (mathematically guaranteed) |
+| Penalty weight needed | Yes, often very large (10⁶–10¹²) | **None** |
+| Training effort | Wasted on learning known values | **Focused entirely on PDE interior** |
+| Convergence | Slower, sensitive to weight tuning | **Faster, more stable** |
+| Implementation | Simple (add loss terms) | Requires designing output transform |
+| Applicable to | Any BC type | Primarily Dirichlet (value) BCs |
+
+In this project, 3 out of 4 boundary conditions are hard-coded. Only the stress-free Neumann condition is enforced via a soft penalty (weighted by 100, since proper normalization removes the need for extreme weights).
 
 ## **Physics Residuals and Loss Function**
 
@@ -422,7 +459,7 @@ u_{\mathrm{scale}}/L^2
 }
 ```
 
-Both residuals approach zero when the PINN satisfies the governing equations.
+Both residuals approach zero when the PINN satisfies the governing equations. Dividing by the characteristic scale of each equation ensures that both loss terms contribute at comparable numerical magnitudes without manually-tuned weights.
 
 ### Loss Function
 
@@ -435,7 +472,7 @@ The total loss combines three components:
 +
 \underbrace{\frac{1}{N}\sum_{i=1}^{N}r_u(x_i)^2}_{\text{mechanical equilibrium}}
 +
-100\underbrace{\left[\frac{\widehat{u}'(L)-\alpha(\widehat{T}(L)-T_{\mathrm{ref}})}{u_{\mathrm{scale}}/L}\right]^2}_{\text{stress-free BC}}
+100\underbrace{\left[\frac{\widehat{u}'(L)-\alpha(\widehat{T}(L)-T_{\mathrm{ref}})}{u_{\mathrm{scale}}/L}\right]^2}_{\text{stress-free BC (soft)}}
 ```
 
 The boundary condition loss is weighted by 100 to prioritize satisfying the boundary conditions. All terms are nondimensionalized so that temperature and displacement errors contribute at comparable numerical scales.
@@ -449,8 +486,11 @@ The boundary condition loss is weighted by 100 to prioritize satisfying the boun
 | Initial learning rate | 1 × 10⁻³ |
 | Learning rate schedule | Step decay, factor 0.5 every 5,000 epochs |
 | Total epochs | 15,000 |
+| Model selection | Best checkpoint (lowest total loss during training) |
 | Random seed | 42 |
 | Device | CUDA if available, otherwise CPU |
+
+The best model state is saved whenever the total loss reaches a new minimum. The final evaluation uses this best checkpoint rather than the final-epoch weights, which protects against late-training instability or learning-rate-induced spikes.
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -466,9 +506,13 @@ The boundary condition loss is weighted by 100 to prioritize satisfying the boun
 │   │ Update  │<────│ Backpropagate│<────│ Total Loss        │         │
 │   │ Weights │     │ Gradients    │     │ L_heat + L_mech   │         │
 │   └─────────┘     └──────────────┘     │ + 100·L_BC        │         │
-│                                         └──────────────────┘         │
+│         │                               └──────────────────┘         │
+│         v                                                             │
+│   ┌─────────────────────┐                                            │
+│   │ Save if best loss   │                                            │
+│   └─────────────────────┘                                            │
 │                                                                       │
-│   Repeat for 15,000 epochs                                           │
+│   Repeat for 15,000 epochs → Evaluate using best checkpoint          │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -482,7 +526,7 @@ The boundary condition loss is weighted by 100 to prioritize satisfying the boun
 | Exact free-end displacement | 2400.0 μm |
 | PINN free-end displacement | 2399.8 μm |
 
-The predicted temperature and displacement curves visually overlap the corresponding analytical solutions. The loss curve contains temporary optimizer spikes at the learning rate step boundaries, but the model rapidly recovers and converges to an accurate final solution.
+The predicted temperature and displacement curves visually overlap the corresponding analytical solutions. The loss curve contains temporary optimizer spikes at the learning rate step boundaries, but the best-checkpoint strategy ensures the final model is evaluated at peak accuracy.
 
 ## **Assumptions and Limitations**
 
@@ -516,3 +560,4 @@ pip install torch numpy matplotlib
 python pinn_coupled_thermoelastic_bar.py
 ```
 
+For a detailed line-by-line explanation of the implementation, see the [Code Walkthrough](CODE_WALKTHROUGH.md).
