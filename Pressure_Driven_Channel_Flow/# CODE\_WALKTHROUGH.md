@@ -1,4 +1,4 @@
-# CODE_WALKTHROUGH.md — Stokes Flow PINN
+# Stokes Flow PINN
 
 A line-by-line explanation of the pressure-driven channel flow PINN implementation.
 
