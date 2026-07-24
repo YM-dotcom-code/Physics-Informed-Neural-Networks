@@ -17,7 +17,6 @@ The model learns these fields by enforcing the governing heat-conduction and mec
 
 - [Background](#background)
 - [PINN Implementation Workflow](#pinn-implementation-workflow)
-- [Project Files](#project-files)
 - [Physical Problem](#physical-problem)
 - [Governing Equations](#governing-equations)
 - [Exact Analytical Solutions](#exact-analytical-solutions)
@@ -139,15 +138,6 @@ The following steps describe the general procedure for solving any PDE with a Ph
 ```
 
 The rest of this README walks through each step applied to the coupled thermoelastic bar problem.
-
-## **Project Files**
-
-```text
-├── pinn_coupled_thermoelastic_bar.py   ← Main script (run this)
-├── README.md                           ← This document (theory + derivations)
-├── CODE_WALKTHROUGH.md                 ← Line-by-line code explanation
-└── bar_before_after_heating.png        ← Engineering diagram of the problem
-```
 
 ## **Physical Problem**
 
