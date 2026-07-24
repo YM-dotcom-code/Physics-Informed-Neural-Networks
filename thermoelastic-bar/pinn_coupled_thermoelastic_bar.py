@@ -2,38 +2,50 @@ import torch
 import torch.nn as nn
 import numpy as np
 import matplotlib.pyplot as plt
- 
+
+
 torch.manual_seed(42)
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
- 
-# === COUPLED THERMOELASTIC PROBLEM ===
-# Heat equation (steady): k * d²T/dx² = 0, T(0)=100, T(L)=500
-# Elasticity with thermal strain:
-#   σ = E(du/dx - α(T - T_ref))
-#   dσ/dx = 0  →  d²u/dx² - α·dT/dx = 0
-#   BC: u(0)=0 (fixed end), sigma(L)=0 → du/dx(L) = alpha*(T(L)-T_ref)
-# Parameters:
-k = 50.0       # Thermal conductivity [W/mK]
-E_mod = 200e9  # Young's modulus [Pa]
-alpha = 12e-6  # Thermal expansion coefficient [1/K]
-L = 1.0        # Bar length [m]
-T0, TL = 100.0, 500.0  # Temperature BCs
-T_ref = 100.0  # Reference temperature (stress-free)
- 
-# Analytical solutions:
-# T(x) = T0 + (TL-T0)*x/L  (linear, since d²T/dx²=0)
-# From dσ/dx=0 and σ(L)=0 → σ=0 everywhere → u' = α(T - T_ref)
-# u'(x) = α(T(x) - T_ref) = α(TL-T0)x/L   [since T_ref = T0]
-# Integrating with u(0)=0:
-# u(x) = α(TL-T0)x²/(2L)
-# u(L) = α(TL-T0)L/2 = 12e-6 * 400 * 0.5 = 2400 μm
+np.random.seed(42)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Coupled 1D thermoelastic problem
+# Heat: k*T''=0
+# Stress: sigma=E*(u' - alpha*(T-T_ref))
+# Equilibrium: sigma'=0, hence u'' - alpha*T'=0
+k = 50.0
+E = 200e9
+alpha = 12e-6
+L = 1.0
+T0, TL = 100.0, 500.0
+T_ref = 100.0
+
+# Signed physics and positive normalization scales
+dT = TL - T0
+T_scale = max(abs(dT), 1.0)
+strain_scale = max(
+    abs(alpha * (T0 - T_ref)),
+    abs(alpha * (TL - T_ref)),
+    1e-12,
+)
+u_scale = strain_scale * L
+curvature_scale = strain_scale / L
+
+
 def exact_T(x):
-    return T0 + (TL - T0) * x / L
- 
+    return T0 + dT * x / L
+
+
 def exact_u(x):
-    return alpha * (TL - T0) / (2 * L) * x**2
- 
-# === NETWORK: 1 input → 2 outputs [T, u] ===
+    return alpha * (T0 - T_ref) * x + alpha * dT * x**2 / (2 * L)
+
+
+def derivative(y, x):
+    return torch.autograd.grad(
+        y, x, torch.ones_like(y), create_graph=True
+    )[0]
+
+
+# Network with exact temperature and fixed-end constraints
 class ThermoElasticNet(nn.Module):
     def __init__(self):
         super().__init__()
@@ -43,96 +55,110 @@ class ThermoElasticNet(nn.Module):
             nn.Linear(40, 40), nn.Tanh(),
             nn.Linear(40, 40), nn.Tanh(),
         )
-        self.head_T = nn.Linear(40, 1)  # Temperature output
-        self.head_u = nn.Linear(40, 1)  # Displacement output
+        self.head_T = nn.Linear(40, 1)
+        self.head_u = nn.Linear(40, 1)
+
     def forward(self, x):
-        h = self.shared(x)
-        return self.head_T(h), self.head_u(h)
- 
+        s = x / L
+        features = self.shared(s)
+        raw_T, raw_u = self.head_T(features), self.head_u(features)
+        T = T0 + dT * (s + s * (1 - s) * raw_T)
+        u = u_scale * s * raw_u
+        return T, u
+
+
 model = ThermoElasticNet().to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5000, gamma=0.5)
- 
-# === COLLOCATION ===
-n_int = 100
-x_int = torch.linspace(0, L, n_int, device=device).reshape(-1, 1)
-x_int.requires_grad_(True)
-x0 = torch.tensor([[0.0]], device=device, requires_grad=True)
-xL_t = torch.tensor([[L]], device=device, requires_grad=True)
- 
-# === TRAINING ===
-print('Training coupled thermoelastic PINN...\n')
+scheduler = torch.optim.lr_scheduler.StepLR(
+    optimizer, step_size=5000, gamma=0.5
+)
+
+x = torch.linspace(0, L, 100, device=device).reshape(-1, 1)
+x.requires_grad_(True)
+xL = torch.tensor([[L]], device=device, requires_grad=True)
+
+# Training
+print(f"Training on {device}...\n")
 losses = []
+best_loss = float("inf")
+best_state = None
 for epoch in range(15000):
     optimizer.zero_grad()
-    # Forward pass
-    T, u = model(x_int)
-    # --- Heat equation: k*T'' = 0 ---
-    T_x = torch.autograd.grad(T, x_int, torch.ones_like(T), create_graph=True)[0]
-    T_xx = torch.autograd.grad(T_x, x_int, torch.ones_like(T_x), create_graph=True)[0]
-    res_heat = k * T_xx
-    loss_heat = torch.mean(res_heat**2)
-    # --- Elasticity: E*u'' - E*alpha*T' = 0 ---
-    u_x = torch.autograd.grad(u, x_int, torch.ones_like(u), create_graph=True)[0]
-    u_xx = torch.autograd.grad(u_x, x_int, torch.ones_like(u_x), create_graph=True)[0]
-    res_elast = E_mod * u_xx - E_mod * alpha * T_x
-    loss_elast = torch.mean(res_elast**2) / E_mod**2  # Normalize
-    # --- Boundary conditions ---
-    T_0, u_0 = model(x0)
-    T_L, u_L = model(xL_t)
-    # T BCs
-    loss_T_bc = (T_0 - T0)**2 + (T_L - TL)**2
-    # u BC: u(0)=0
-    loss_u_bc = u_0**2
-    # Stress-free at x=L: du/dx(L) = alpha*(T(L) - T_ref)
-    u_L_val = model(xL_t)[1]
-    u_x_L = torch.autograd.grad(u_L_val, xL_t, torch.ones_like(u_L_val), create_graph=True)[0]
-    target_strain = alpha * (TL - T_ref)
-    loss_stress_bc = (u_x_L - target_strain)**2
-    # Combined loss
-    loss_bc = loss_T_bc.squeeze() + 1e12*loss_u_bc.squeeze() + 1e12*loss_stress_bc.squeeze()
-    loss = loss_heat + loss_elast + 100*loss_bc
+    x.grad = None
+    xL.grad = None
+
+    T, u = model(x)
+    T_x, u_x = derivative(T, x), derivative(u, x)
+    T_xx, u_xx = derivative(T_x, x), derivative(u_x, x)
+
+    # Dimensionless PDE residuals
+    r_heat = (k * T_xx) / (k * T_scale / L**2)
+    r_mech = E * (u_xx - alpha * T_x) / (E * curvature_scale)
+    loss_heat = torch.mean(r_heat**2)
+    loss_mech = torch.mean(r_mech**2)
+
+    # Remaining natural BC: sigma(L)=0
+    T_L, u_L = model(xL)
+    u_x_L = derivative(u_L, xL)
+    sigma_L = E * (u_x_L - alpha * (T_L - T_ref))
+    loss_stress = torch.mean((sigma_L / (E * strain_scale))**2)
+
+    loss = loss_heat + loss_mech + 100 * loss_stress
     loss.backward()
     optimizer.step()
     scheduler.step()
-    losses.append(loss.item())
+    current_loss = loss.item()
+    losses.append(current_loss)
+
+    if current_loss < best_loss:
+        best_loss = current_loss
+        best_state = {
+            name: value.detach().clone()
+            for name, value in model.state_dict().items()
+        }
+
     if (epoch + 1) % 5000 == 0:
-        print(f'  Epoch {epoch+1}, Loss: {loss.item():.2e}')
- 
-# === EVALUATION ===
+        print(f"Epoch {epoch + 1}: Loss = {current_loss:.2e}")
+
+# Evaluate the best iterate, not a possible final-epoch spike.
+model.load_state_dict(best_state)
+print(f"Best training loss: {best_loss:.2e}")
+
+# Evaluation
 x_test = torch.linspace(0, L, 200, device=device).reshape(-1, 1)
 with torch.no_grad():
     T_pred, u_pred = model(x_test)
-    T_pred = T_pred.cpu().numpy().flatten()
-    u_pred = u_pred.cpu().numpy().flatten()
+
 x_np = x_test.cpu().numpy().flatten()
-T_ex = exact_T(x_np)
-u_ex = exact_u(x_np)
- 
-print(f'\n=== Results ===')
-print(f'Temperature: max error = {np.max(np.abs(T_pred-T_ex)):.3f}°C')
-print(f'Displacement: max error = {np.max(np.abs(u_pred-u_ex))*1e6:.3f} μm')
-print(f'Max displacement (exact): {np.max(u_ex)*1e6:.1f} μm')
-print(f'Max displacement (PINN):  {np.max(u_pred)*1e6:.1f} μm')
- 
-# === PLOT ===
+T_pred = T_pred.cpu().numpy().flatten()
+u_pred = u_pred.cpu().numpy().flatten()
+T_true, u_true = exact_T(x_np), exact_u(x_np)
+
+T_error = np.max(np.abs(T_pred - T_true))
+u_error = np.max(np.abs(u_pred - u_true))
+print("\n=== Results ===")
+print(f"Maximum temperature error: {T_error:.6f} °C")
+print(f"Maximum displacement error: {u_error * 1e6:.3f} μm")
+print(f"Tip displacement (exact):   {u_true[-1] * 1e6:.3f} μm")
+print(f"Tip displacement (PINN):    {u_pred[-1] * 1e6:.3f} μm")
+
+# Plot
 fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-# Temperature
-axes[0].plot(x_np, T_ex, 'b-', linewidth=2, label='Exact')
-axes[0].plot(x_np, T_pred, 'r--', linewidth=2, label='PINN')
-axes[0].set_xlabel('x [m]'); axes[0].set_ylabel('T [°C]')
-axes[0].set_title('Temperature Field'); axes[0].legend()
-# Displacement
-axes[1].plot(x_np, u_ex*1e6, 'b-', linewidth=2, label='Exact')
-axes[1].plot(x_np, u_pred*1e6, 'r--', linewidth=2, label='PINN')
-axes[1].set_xlabel('x [m]'); axes[1].set_ylabel('u [μm]')
-axes[1].set_title('Displacement (Thermal Expansion)'); axes[1].legend()
-# Loss
-axes[2].semilogy(losses)
-axes[2].set_xlabel('Epoch'); axes[2].set_ylabel('Loss')
-axes[2].set_title('Training Convergence')
+axes[0].plot(x_np, T_true, "b-", linewidth=2, label="Exact")
+axes[0].plot(x_np, T_pred, "r--", linewidth=2, label="PINN")
+axes[0].set(xlabel="x [m]", ylabel="T [°C]", title="Temperature Field")
+
+axes[1].plot(x_np, u_true * 1e6, "b-", linewidth=2, label="Exact")
+axes[1].plot(x_np, u_pred * 1e6, "r--", linewidth=2, label="PINN")
+axes[1].set(xlabel="x [m]", ylabel="u [μm]", title="Thermal Expansion")
+
+axes[2].semilogy(losses, color="darkgreen")
+axes[2].set(xlabel="Epoch", ylabel="Loss", title="Training Convergence")
+
+for axis in axes:
+    axis.grid(True, alpha=0.3)
+axes[0].legend()
+axes[1].legend()
 plt.tight_layout()
-plt.savefig('thermoelastic.png', dpi=150)
+plt.savefig("thermoelastic.png", dpi=200, bbox_inches="tight")
 plt.show()
-print('\nKey insight: One network, two outputs, coupled physics.')
-print('The thermal field drives the mechanical response automatically.')
