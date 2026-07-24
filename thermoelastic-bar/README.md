@@ -16,6 +16,8 @@ The model learns these fields by enforcing the governing heat-conduction and mec
 ## **Table of Contents**
 
 - [Background](#background)
+- [PINN Implementation Workflow](#pinn-implementation-workflow)
+- [Project Files](#project-files)
 - [Physical Problem](#physical-problem)
 - [Governing Equations](#governing-equations)
 - [Exact Analytical Solutions](#exact-analytical-solutions)
@@ -61,6 +63,90 @@ This type of problem appears in engineering applications including heated pipeli
 └─────────────────────┘         └─────────────────────┘         └─────────────────────┘
 
                               One-Way Coupling (T → u)
+```
+
+## **PINN Implementation Workflow**
+
+The following steps describe the general procedure for solving any PDE with a Physics-Informed Neural Network. This workflow applies to heat transfer, solid mechanics, fluid dynamics, electromagnetics, or any other field governed by differential equations.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     General PINN Workflow (Any Problem)                      │
+│                                                                             │
+│   ┌──────────────────────────────────────────────────────────────────────┐  │
+│   │ Step 1: Define the Problem                                           │  │
+│   │   • Write down the governing PDE(s)                                  │  │
+│   │   • Identify the domain and boundary conditions                      │  │
+│   │   • List all physical parameters                                     │  │
+│   └──────────────────────────────────────────────────────────────────────┘  │
+│                              ↓                                              │
+│   ┌──────────────────────────────────────────────────────────────────────┐  │
+│   │ Step 2: Analytical Solution (if available)                           │  │
+│   │   • Solve the PDE by hand for validation                            │  │
+│   │   • If no closed-form exists, use reference data or FEM results     │  │
+│   └──────────────────────────────────────────────────────────────────────┘  │
+│                              ↓                                              │
+│   ┌──────────────────────────────────────────────────────────────────────┐  │
+│   │ Step 3: Design the Network Architecture                             │  │
+│   │   • Choose input(s): spatial coordinates, time, parameters          │  │
+│   │   • Choose output(s): one head per physical field                   │  │
+│   │   • Select activation function (smooth, e.g. tanh or sin)           │  │
+│   │   • Size the hidden layers (start small, scale up if needed)        │  │
+│   └──────────────────────────────────────────────────────────────────────┘  │
+│                              ↓                                              │
+│   ┌──────────────────────────────────────────────────────────────────────┐  │
+│   │ Step 4: Enforce Boundary Conditions                                  │  │
+│   │   • Hard constraints: build BCs into the output transformation      │  │
+│   │   • Soft constraints: add penalty terms to the loss function         │  │
+│   │   • Hard is preferred when possible (exact, no weight tuning)       │  │
+│   └──────────────────────────────────────────────────────────────────────┘  │
+│                              ↓                                              │
+│   ┌──────────────────────────────────────────────────────────────────────┐  │
+│   │ Step 5: Sample Collocation Points                                    │  │
+│   │   • Distribute points throughout the domain                         │  │
+│   │   • Uniform grid, random, or adaptive (refine where error is high)  │  │
+│   │   • These are NOT training data — just locations to evaluate the PDE│  │
+│   └──────────────────────────────────────────────────────────────────────┘  │
+│                              ↓                                              │
+│   ┌──────────────────────────────────────────────────────────────────────┐  │
+│   │ Step 6: Compute PDE Residuals via Automatic Differentiation         │  │
+│   │   • Forward pass: network predicts field values at each point       │  │
+│   │   • Autograd: compute exact spatial derivatives (∂/∂x, ∂²/∂x², …)  │  │
+│   │   • Substitute into PDE: residual = how much physics is violated    │  │
+│   └──────────────────────────────────────────────────────────────────────┘  │
+│                              ↓                                              │
+│   ┌──────────────────────────────────────────────────────────────────────┐  │
+│   │ Step 7: Assemble the Loss Function                                   │  │
+│   │   • L = mean(residual²) + weighted BC penalties (if soft)           │  │
+│   │   • Normalize each term to comparable magnitude                     │  │
+│   │   • No labeled data needed — the PDE IS the supervision            │  │
+│   └──────────────────────────────────────────────────────────────────────┘  │
+│                              ↓                                              │
+│   ┌──────────────────────────────────────────────────────────────────────┐  │
+│   │ Step 8: Train with Gradient Descent                                  │  │
+│   │   • Backpropagate loss through the network AND through autograd     │  │
+│   │   • Adam optimizer with learning rate scheduling                    │  │
+│   │   • Track best model checkpoint                                     │  │
+│   └──────────────────────────────────────────────────────────────────────┘  │
+│                              ↓                                              │
+│   ┌──────────────────────────────────────────────────────────────────────┐  │
+│   │ Step 9: Validate                                                     │  │
+│   │   • Compare predictions against analytical/reference solutions       │  │
+│   │   • Evaluate on a denser grid than training (test generalization)   │  │
+│   │   • Report error metrics and plot overlays                          │  │
+│   └──────────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+The rest of this README walks through each step applied to the coupled thermoelastic bar problem.
+
+## **Project Files**
+
+```text
+├── pinn_coupled_thermoelastic_bar.py   ← Main script (run this)
+├── README.md                           ← This document (theory + derivations)
+├── CODE_WALKTHROUGH.md                 ← Line-by-line code explanation
+└── bar_before_after_heating.png        ← Engineering diagram of the problem
 ```
 
 ## **Physical Problem**
@@ -200,102 +286,203 @@ Using the thermoelastic constitutive equation, the stress-free condition becomes
 
 ## **Exact Analytical Solutions**
 
-### Temperature
+Because this problem has simple geometry and constant material properties, both governing equations can be solved exactly by hand. This section walks through every integration step and then verifies the result numerically.
 
-Because the second derivative of temperature is zero, the exact temperature distribution is linear:
+### Temperature — Step-by-Step Derivation
 
-```math
-T(x)=T_0+\frac{T_L-T_0}{L}x
-```
-
-For the parameters used in this project:
+**Step 1: Start from the governing equation.**
 
 ```math
-T(x)=100+400x
+k\frac{d^2T}{dx^2}=0
+\quad\Longrightarrow\quad
+\frac{d^2T}{dx^2}=0
 ```
+
+Since `k ≠ 0`, we can divide it out. The equation says the second derivative of temperature is zero everywhere.
+
+**Step 2: Integrate once.**
+
+```math
+\frac{dT}{dx}=C_1
+```
+
+The temperature gradient is a constant (straight line in space).
+
+**Step 3: Integrate again.**
+
+```math
+T(x)=C_1 x+C_2
+```
+
+This is the general solution — a linear function with two unknown constants.
+
+**Step 4: Apply boundary condition at `x = 0`.**
+
+```math
+T(0)=C_1(0)+C_2=C_2=T_0
+\quad\Longrightarrow\quad
+C_2=100
+```
+
+**Step 5: Apply boundary condition at `x = L`.**
+
+```math
+T(L)=C_1 L+T_0=T_L
+\quad\Longrightarrow\quad
+C_1=\frac{T_L-T_0}{L}=\frac{500-100}{1}=400\ \mathrm{°C/m}
+```
+
+**Step 6: Write the final solution.**
+
+```math
+T(x)=T_0+\frac{T_L-T_0}{L}x=100+400x
+```
+
+**Numerical verification:**
+
+| x [m] | T(x) = 100 + 400x |
+|------:|-------------------:|
+| 0.00 | 100°C |
+| 0.25 | 200°C |
+| 0.50 | 300°C |
+| 0.75 | 400°C |
+| 1.00 | 500°C |
+
+Check: `T(0) = 100` ✓, `T(1) = 500` ✓, `T''(x) = 0` ✓
 
 ```text
     T [°C]
-     500 ┤                                          ●
+     500 ┤                                          ●  T(1) = 500
          │                                       ╱
          │                                    ╱
          │                                 ╱
-     300 ┤                              ╱
+     300 ┤                              ╱         slope = 400 °C/m
          │                           ╱
          │                        ╱
          │                     ╱
-     100 ┤● ─ ─ ─ ─ ─ ─ ─ ╱
+     100 ┤● ─ ─ ─ ─ ─ ─ ─ ╱                     T(0) = 100
          │
          └────────────────────────────────────────── x [m]
          0                                          1.0
-
-                    T(x) = 100 + 400x
 ```
 
-### Displacement
+### Displacement — Step-by-Step Derivation
 
-Because mechanical equilibrium makes the axial stress constant and the free end has zero stress, the stress is zero throughout the bar:
+**Step 1: Establish that stress is zero everywhere.**
+
+From mechanical equilibrium: `dσ/dx = 0`, which means stress is constant along the bar.
+
+From the stress-free boundary condition: `σ(L) = 0`.
+
+Constant + equals zero at one point → zero everywhere:
 
 ```math
-\sigma(x)=0
+\sigma(x)=0\quad\text{for all }x\in[0,L]
 ```
 
-Therefore:
+**Step 2: Use zero stress to find the strain.**
+
+The constitutive relation with σ = 0:
+
+```math
+0=E\left[\frac{du}{dx}-\alpha(T-T_{\mathrm{ref}})\right]
+\quad\Longrightarrow\quad
+\frac{du}{dx}=\alpha\left[T(x)-T_{\mathrm{ref}}\right]
+```
+
+This is the key physical insight: when stress is zero, all thermal expansion converts directly into displacement.
+
+**Step 3: Substitute the known temperature field.**
 
 ```math
 \frac{du}{dx}
-=
-\alpha\left[T(x)-T_{\mathrm{ref}}\right]
+=\alpha\left[(T_0+\frac{\Delta T}{L}x)-T_{\mathrm{ref}}\right]
+=\alpha\left[(T_0-T_{\mathrm{ref}})+\frac{\Delta T}{L}x\right]
 ```
 
-Substituting the linear temperature field and integrating gives:
+Since `T_ref = T₀ = 100°C`, the constant part `(T₀ − T_ref)` is zero:
 
 ```math
-u(x)
-=
-\alpha(T_0-T_{\mathrm{ref}})x
-+
-\frac{\alpha(T_L-T_0)}{2L}x^2
+\frac{du}{dx}=\alpha\frac{\Delta T}{L}x=12\times10^{-6}\times\frac{400}{1}\times x=4.8\times10^{-3}\,x
 ```
 
-Since the reference temperature equals the left-end temperature, the first term vanishes:
+**Step 4: Integrate to get displacement.**
 
 ```math
-u(x)
-=
-\frac{\alpha(T_L-T_0)}{2L}x^2
+u(x)=\int_0^x \alpha\frac{\Delta T}{L}\xi\,d\xi
+=\frac{\alpha\,\Delta T}{2L}x^2+C
 ```
 
-The maximum displacement occurs at the free end:
+**Step 5: Apply boundary condition `u(0) = 0`.**
 
 ```math
-u(L)
-=
-\frac{\alpha(T_L-T_0)L}{2}
-=
-\frac{(12\times10^{-6})(500-100)(1)}{2}
-=
-0.0024\ \mathrm{m}
-=
-2400\ \mu\mathrm{m}
+u(0)=\frac{\alpha\,\Delta T}{2L}(0)^2+C=0
+\quad\Longrightarrow\quad
+C=0
+```
+
+**Step 6: Write the final solution.**
+
+```math
+u(x)=\frac{\alpha(T_L-T_0)}{2L}x^2
+```
+
+**Numerical verification:**
+
+Coefficient: `α·ΔT/(2L) = 12×10⁻⁶ × 400 / (2×1) = 2.4×10⁻³ m⁻¹`
+
+| x [m] | u(x) = 2.4×10⁻³ · x² | u [μm] |
+|------:|----------------------:|-------:|
+| 0.00 | 0 | 0 |
+| 0.25 | 2.4×10⁻³ × 0.0625 | 150 |
+| 0.50 | 2.4×10⁻³ × 0.25 | 600 |
+| 0.75 | 2.4×10⁻³ × 0.5625 | 1350 |
+| 1.00 | 2.4×10⁻³ × 1.0 | 2400 |
+
+Check boundary conditions:
+- `u(0) = 0` ✓ (fixed end)
+- `u'(1) = 4.8×10⁻³` and `α(T(L) − T_ref) = 12×10⁻⁶ × 400 = 4.8×10⁻³` ✓ (stress-free end)
+
+Check governing equation:
+- `u''(x) = 2 × 2.4×10⁻³ = 4.8×10⁻³`
+- `α·T'(x) = 12×10⁻⁶ × 400 = 4.8×10⁻³`
+- `u'' − α·T' = 0` ✓
 ```
 
 ```text
     u [μm]
-    2400 ┤                                          ●
-         │                                       ╱
+    2400 ┤                                          ●  u(L) = 2400 μm
+         │                                       ╱     (free-end expansion)
          │                                    ╱
          │                                ╱
-    1200 ┤                           ╱╱
-         │                      ╱╱
-         │                 ╱╱
-         │           ╱╱╱
-         │     ╱╱╱╱
-       0 ┤●╱╱
+    1350 ┤· · · · · · · · · · · · · · ╱
+         │                         ╱╱
+     600 ┤· · · · · · · · · · ╱╱
+         │                ╱╱
+     150 ┤· · · · · · ╱╱
+       0 ┤●─────────╱                              u(0) = 0 (fixed end)
          └────────────────────────────────────────── x [m]
          0                                          1.0
 
-              u(x) = α(Tₗ - T₀)x² / (2L)
+              u(x) = α·ΔT·x² / (2L)     [parabolic — faster growth near free end]
+```
+
+### Summary of Analytical Results
+
+```text
+┌───────────────────────────────────────────────────────────────────────┐
+│                    Complete Analytical Solution                        │
+│                                                                       │
+│   Temperature:   T(x) = 100 + 400x           [linear, °C]            │
+│   Displacement:  u(x) = 2.4×10⁻³ x²          [parabolic, m]          │
+│   Stress:        σ(x) = 0                     [everywhere]            │
+│   Strain:        ε(x) = 4.8×10⁻³ x            [linear]               │
+│                                                                       │
+│   Key values at free end (x = L = 1 m):                              │
+│     T(L) = 500°C                                                      │
+│     u(L) = 0.0024 m = 2400 μm                                        │
+│     u'(L) = 4.8×10⁻³ = α(Tₗ − Tref)  → confirms σ(L) = 0           │
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
 ## **PINN Architecture**
