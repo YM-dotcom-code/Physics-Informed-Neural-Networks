@@ -9,9 +9,11 @@ A single neural network predicts two physical fields in a heated bar:
 
 The model learns these fields by enforcing the governing heat-conduction and mechanical-equilibrium equations using PyTorch automatic differentiation. No training data is needed. The governing equations themselves supervise the learning.
 
+
 <p align="center">
-  <img width="1280" height="695" alt="Figure_1" src="https://github.com/user-attachments/assets/04e0cb0e-6e1a-4641-90b2-9e18d8fb25e2" />
+  <img width="1283" alt="bar_before_after_heating" src="https://github.com/user-attachments/assets/e675819e-e11d-446b-b0ae-55501e1044e5" />
 </p>
+
 
 ## **Table of Contents**
 
@@ -104,7 +106,7 @@ The following steps describe the general procedure for solving any PDE with a Ph
 │   │ Step 5: Sample Collocation Points                                    │  │
 │   │   • Distribute points throughout the domain                         │  │
 │   │   • Uniform grid, random, or adaptive (refine where error is high)  │  │
-│   │   • These are NOT training data — just locations to evaluate the PDE│  │
+│   │   • These are NOT training data  -  just locations to evaluate the PDE│  │
 │   └──────────────────────────────────────────────────────────────────────┘  │
 │                              ↓                                              │
 │   ┌──────────────────────────────────────────────────────────────────────┐  │
@@ -118,7 +120,7 @@ The following steps describe the general procedure for solving any PDE with a Ph
 │   │ Step 7: Assemble the Loss Function                                   │  │
 │   │   • L = mean(residual²) + weighted BC penalties (if soft)           │  │
 │   │   • Normalize each term to comparable magnitude                     │  │
-│   │   • No labeled data needed — the PDE IS the supervision            │  │
+│   │   • No labeled data needed  -  the PDE IS the supervision            │  │
 │   └──────────────────────────────────────────────────────────────────────┘  │
 │                              ↓                                              │
 │   ┌──────────────────────────────────────────────────────────────────────┐  │
@@ -161,9 +163,6 @@ T(x) \longrightarrow u(x)
     x = 0                                             x = L
 ```
 
-<p align="center">
- <img width="1283" height="1283" alt="bar_before_after_heating" src="https://github.com/user-attachments/assets/e675819e-e11d-446b-b0ae-55501e1044e5" />
-</p>
 
 ### Problem Parameters
 
@@ -278,7 +277,7 @@ Using the thermoelastic constitutive equation, the stress-free condition becomes
 
 Because this problem has simple geometry and constant material properties, both governing equations can be solved exactly by hand. This section walks through every integration step and then verifies the result numerically.
 
-### Temperature — Step-by-Step Derivation
+### Temperature  -  Step-by-Step Derivation
 
 **Step 1: Start from the governing equation.**
 
@@ -304,7 +303,7 @@ The temperature gradient is a constant (straight line in space).
 T(x)=C_1 x+C_2
 ```
 
-This is the general solution — a linear function with two unknown constants.
+This is the general solution  -  a linear function with two unknown constants.
 
 **Step 4: Apply boundary condition at `x = 0`.**
 
@@ -356,7 +355,7 @@ Check: `T(0) = 100` ✓, `T(1) = 500` ✓, `T''(x) = 0` ✓
          0                                          1.0
 ```
 
-### Displacement — Step-by-Step Derivation
+### Displacement  -  Step-by-Step Derivation
 
 **Step 1: Establish that stress is zero everywhere.**
 
@@ -454,7 +453,7 @@ Check governing equation:
          └────────────────────────────────────────── x [m]
          0                                          1.0
 
-              u(x) = α·ΔT·x² / (2L)     [parabolic — faster growth near free end]
+              u(x) = α·ΔT·x² / (2L)     [parabolic  -  faster growth near free end]
 ```
 
 ### Summary of Analytical Results
@@ -542,7 +541,7 @@ The optimizer tries to minimize these penalty terms alongside the PDE residuals.
 
 ### Hard Boundary Constraints
 
-A hard constraint builds the boundary condition directly into the mathematical form of the network output. The boundary values are satisfied **by construction** for any set of network weights — no optimization is needed.
+A hard constraint builds the boundary condition directly into the mathematical form of the network output. The boundary values are satisfied **by construction** for any set of network weights  -  no optimization is needed.
 
 The general strategy is to write the output as:
 
@@ -569,7 +568,7 @@ where `A(x)` is a function that satisfies all boundary conditions on its own, an
 
 - At `s = 0`: both terms involving `s` vanish → `T̂ = T₀` ✓
 - At `s = 1`: the `s(1−s)` factor vanishes → `T̂ = T₀ + ΔT = Tₗ` ✓
-- The factor `s(1−s)` is called a **bubble function** — it opens up in the interior and closes at both ends.
+- The factor `s(1−s)` is called a **bubble function**  -  it opens up in the interior and closes at both ends.
 
 **Displacement** (satisfies `u(0) = 0`):
 
@@ -694,6 +693,11 @@ The best model state is saved whenever the total loss reaches a new minimum. The
 ```
 
 ## **Results**
+
+<p align="center">
+  <img width="1280" alt="PINN Results" src="https://github.com/user-attachments/assets/04e0cb0e-6e1a-4641-90b2-9e18d8fb25e2" />
+</p>
+
 
 | Quantity | Result |
 |---|---:|
